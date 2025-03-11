@@ -1,4 +1,9 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:usb_serial/usb_serial.dart';
+import 'package:usb_serial/transaction.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +12,354 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'USB Serial Control',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const SerialControlPage(title: 'USB Serial Control'),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
+class SerialControlPage extends StatefulWidget {
+  const SerialControlPage({super.key, required this.title});
   final String title;
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<SerialControlPage> createState() => _SerialControlPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _SerialControlPageState extends State<SerialControlPage> {
+  UsbPort? _port;
+  List<UsbDevice> _devices = [];
+  List<String> _serialData = [];
 
-  void _incrementCounter() {
+  // Command constants
+  static const int START_BYTE = 0x02;
+  static const int END_BYTE = 0x03;
+  static const int LOG_START_BYTE = 0x04;
+
+  static const Map<String, int> COMMANDS = {
+    'FORWARD': 0x10,
+    'REVERSE': 0x11,
+    'STOP': 0x12,
+    'PING': 0x13,
+    'PONG': 0x14,
+  };
+
+  static const Map<int, String> RESPONSES = {
+    0x14: 'PONG',
+    0x15: 'CMD_DETECTION_ON',
+    0x16: 'CMD_DETECTION_OFF',
+  };
+
+  StreamSubscription<Uint8List>? _subscription;
+  Timer? _pingTimer;
+  bool _isConnected = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initUsb();
+  }
+
+  @override
+  void dispose() {
+    _pingTimer?.cancel();
+    _subscription?.cancel();
+    _disconnectFromDevice();
+    super.dispose();
+  }
+
+  Future<void> _initUsb() async {
+    UsbSerial.usbEventStream?.listen((UsbEvent event) {
+      _refreshDeviceList();
+    });
+
+    await _refreshDeviceList();
+    _tryAutoConnect();
+  }
+
+  Future<void> _refreshDeviceList() async {
+    List<UsbDevice> devices = await UsbSerial.listDevices();
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _devices = devices;
+    });
+  }
+
+  void _tryAutoConnect() async {
+    if (_devices.isEmpty) return;
+
+    final esp32 = _devices.cast<UsbDevice?>().firstWhere(
+      (device) => device?.vid == 4292 && device?.pid == 60000,
+      orElse: () => null,
+    );
+
+    _connectToDevice(esp32!);
+  }
+
+  void _connectToDevice(UsbDevice device) async {
+    _port = await device.create();
+
+    if (_port == null) {
+      _addToSerialOutput('Failed to create port for ${device.productName}');
+      return;
+    }
+
+    bool openResult = await _port!.open();
+    if (!openResult) {
+      _addToSerialOutput('Failed to open port for ${device.productName}');
+      return;
+    }
+
+    await _port!.setDTR(true);
+    await _port!.setRTS(true);
+
+    await _port!.setPortParameters(
+      115200, // Baud rate
+      UsbPort.DATABITS_8,
+      UsbPort.STOPBITS_1,
+      UsbPort.PARITY_NONE,
+    );
+
+    _subscription = _port!.inputStream!.listen((Uint8List data) {
+      _processIncomingData(data);
+    });
+
+    setState(() {
+      _isConnected = true;
+    });
+
+    _addToSerialOutput('Connected to ${device.productName}');
+
+    // Start sending ping every second
+    _startPingTimer();
+  }
+
+  void _disconnectFromDevice() {
+    _pingTimer?.cancel();
+    _subscription?.cancel();
+
+    if (_port != null) {
+      _port!.close();
+      _port = null;
+    }
+
+    setState(() {
+      _isConnected = false;
+    });
+
+    _addToSerialOutput('Disconnected');
+  }
+
+  void _startPingTimer() {
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      sendCommand('PING');
+    });
+  }
+
+  void sendCommand(String command) {
+    if (!_isConnected || _port == null || !COMMANDS.containsKey(command)) {
+      return;
+    }
+
+    final int cmdByte = COMMANDS[command]!;
+    final Uint8List frame = Uint8List.fromList([START_BYTE, cmdByte, END_BYTE]);
+
+    _port!.write(frame);
+    _addToSerialOutput(
+      'Sent: $command (0x${cmdByte.toRadixString(16).padLeft(2, '0')})',
+    );
+  }
+
+  void _processIncomingData(Uint8List data) {
+    String hexData = data
+        .map((byte) => '0x${byte.toRadixString(16).padLeft(2, '0')}')
+        .join(' ');
+    _addToSerialOutput('Received: $hexData');
+
+    // Process specific responses
+    if (data.length >= 3 &&
+        data[0] == START_BYTE &&
+        data[data.length - 1] == END_BYTE) {
+      int cmdByte = data[1];
+      String response =
+          RESPONSES[cmdByte] ??
+          'Unknown (0x${cmdByte.toRadixString(16).padLeft(2, '0')})';
+      _addToSerialOutput('Received command: $response');
+    }
+  }
+
+  void _addToSerialOutput(String message) {
+    setState(() {
+      _serialData.add(
+        '${DateTime.now().toString().split('.').first}: $message',
+      );
+      // Keep only the last 100 messages
+      if (_serialData.length > 100) {
+        _serialData.removeAt(0);
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
+        actions: [
+          IconButton(
+            icon: Icon(_isConnected ? Icons.usb : Icons.usb_off),
+            onPressed: () async {
+              if (_isConnected) {
+                _disconnectFromDevice();
+              } else {
+                await _refreshDeviceList();
+                _showDeviceSelectionDialog();
+              }
+            },
+          ),
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Status: ${_isConnected ? 'Connected' : 'Disconnected'}',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: _isConnected ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Commands:',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  direction: Axis.horizontal,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children:
+                      COMMANDS.keys.map((command) {
+                        return ElevatedButton(
+                          onPressed:
+                              _isConnected ? () => sendCommand(command) : null,
+                          child: Text(command),
+                        );
+                      }).toList(),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Serial Monitor:',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          setState(() {
+                            _serialData.clear();
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.all(8.0),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ListView.builder(
+                      reverse: true,
+                      itemCount: _serialData.length,
+                      itemBuilder: (context, index) {
+                        return Text(
+                          _serialData[_serialData.length - 1 - index],
+                          style: const TextStyle(
+                            color: Colors.green,
+                            fontFamily: 'monospace',
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeviceSelectionDialog() {
+    if (_devices.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No USB devices available')));
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Select USB Device'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _devices.length,
+              itemBuilder: (context, index) {
+                UsbDevice device = _devices[index];
+                return ListTile(
+                  title: Text(device.productName ?? 'Unknown device'),
+                  subtitle: Text('VID: ${device.vid}, PID: ${device.pid}'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _connectToDevice(device);
+                  },
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Cancel'),
             ),
           ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+        );
+      },
     );
   }
 }
