@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:usb_serial/usb_serial.dart';
-import 'package:usb_serial/transaction.dart';
 
 void main() {
   runApp(const MyApp());
@@ -36,7 +35,7 @@ class SerialControlPage extends StatefulWidget {
 class _SerialControlPageState extends State<SerialControlPage> {
   UsbPort? _port;
   List<UsbDevice> _devices = [];
-  List<String> _serialData = [];
+  final List<String> _serialData = [];
 
   // ESP32 identifiers
   static const int ESP32_VID = 4292;
@@ -311,7 +310,9 @@ class _SerialControlPageState extends State<SerialControlPage> {
     String hexData = data
         .map((byte) => '0x${byte.toRadixString(16).padLeft(2, '0')}')
         .join(' ');
-    _addToSerialOutput('Received: $hexData');
+    String string = new String.fromCharCodes(data);
+
+    _addToSerialOutput('Received: ${string}');
 
     // Process specific responses
     if (data.length >= 3 &&
