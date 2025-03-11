@@ -32,6 +32,42 @@ class SerialControlPage extends StatefulWidget {
   State<SerialControlPage> createState() => _SerialControlPageState();
 }
 
+Uint8List serialBuffer = Uint8List(0);
+
+enum COMMANDS {
+  forward(0x10),
+  reverse(0x11),
+  stop(0x12),
+  ping(0x13),
+  pong(0x14);
+
+  final int value;
+  const COMMANDS(this.value);
+
+  static COMMANDS? fromValue(int value) {
+    return COMMANDS.values.cast().firstWhere(
+      (e) => e.value == value,
+      orElse: () => null,
+    );
+  }
+}
+
+enum RESPONSES {
+  pong(0x14),
+  cmdDetectionOn(0x15),
+  cmdDetectionOff(0x16);
+
+  final int value;
+  const RESPONSES(this.value);
+
+  static RESPONSES? fromValue(int value) {
+    return RESPONSES.values.cast().firstWhere(
+      (e) => e.value == value,
+      orElse: () => null,
+    );
+  }
+}
+
 class _SerialControlPageState extends State<SerialControlPage> {
   UsbPort? _port;
   List<UsbDevice> _devices = [];
@@ -45,20 +81,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
   static const int START_BYTE = 0x02;
   static const int END_BYTE = 0x03;
   static const int LOG_START_BYTE = 0x04;
-
-  static const Map<String, int> COMMANDS = {
-    'FORWARD': 0x10,
-    'REVERSE': 0x11,
-    'STOP': 0x12,
-    'PING': 0x13,
-    'PONG': 0x14,
-  };
-
-  static const Map<int, String> RESPONSES = {
-    0x14: 'PONG',
-    0x15: 'CMD_DETECTION_ON',
-    0x16: 'CMD_DETECTION_OFF',
-  };
 
   StreamSubscription<Uint8List>? _subscription;
   StreamSubscription<UsbEvent>? _usbEventSubscription;
@@ -95,7 +117,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
         }
         // If device was removed and we were connected, handle disconnection
         else if (event.event == UsbEvent.ACTION_USB_DETACHED && _isConnected) {
-          _handleDeviceDisconnection();
+          //  _handleDeviceDisconnection();
         }
       });
     });
@@ -277,17 +299,17 @@ class _SerialControlPageState extends State<SerialControlPage> {
   void _startPingTimer() {
     _pingTimer?.cancel();
     _pingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      sendCommand('PING');
+      sendCommand(COMMANDS.ping);
     });
   }
 
-  void sendCommand(String command) {
-    if (!_isConnected || _port == null || !COMMANDS.containsKey(command)) {
+  void sendCommand(COMMANDS command) {
+    if (!_isConnected || _port == null) {
       return;
     }
 
     try {
-      final int cmdByte = COMMANDS[command]!;
+      final int cmdByte = command.value;
       final Uint8List frame = Uint8List.fromList([
         START_BYTE,
         cmdByte,
@@ -300,7 +322,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
       );
     } catch (e) {
       _addToSerialOutput('Error sending command $command: $e');
-      _handleDeviceDisconnection();
     }
   }
 
@@ -319,8 +340,9 @@ class _SerialControlPageState extends State<SerialControlPage> {
         data[0] == START_BYTE &&
         data[data.length - 1] == END_BYTE) {
       int cmdByte = data[1];
+      handleCommand(cmdByte);
       String response =
-          RESPONSES[cmdByte] ??
+          RESPONSES.fromValue(cmdByte)?.value.toString() ??
           'Unknown (0x${cmdByte.toRadixString(16).padLeft(2, '0')})';
       _addToSerialOutput('Received command: $response');
     }
@@ -361,6 +383,32 @@ class _SerialControlPageState extends State<SerialControlPage> {
       return Colors.orange;
     } else {
       return Colors.red;
+    }
+  }
+
+  void handleCommand(int command) {
+    final value = RESPONSES.fromValue(command);
+
+    if (value == null) {
+      _addToSerialOutput('Uknow command: ${command}');
+      return;
+    }
+
+    switch (value) {
+      case RESPONSES.pong:
+        _addToSerialOutput('command recived: ${RESPONSES.pong.name}');
+        break;
+      case RESPONSES.cmdDetectionOn:
+        _addToSerialOutput('command recived: ${RESPONSES.cmdDetectionOn.name}');
+        break;
+      case RESPONSES.cmdDetectionOff:
+        _addToSerialOutput(
+          'command recived: ${RESPONSES.cmdDetectionOff.name}',
+        );
+        break;
+      default:
+        _addToSerialOutput('Uknow command: ${value.value}');
+        break;
     }
   }
 
@@ -424,11 +472,11 @@ class _SerialControlPageState extends State<SerialControlPage> {
                   spacing: 8,
                   runSpacing: 8,
                   children:
-                      COMMANDS.keys.map((command) {
+                      COMMANDS.values.map((command) {
                         return ElevatedButton(
                           onPressed:
                               _isConnected ? () => sendCommand(command) : null,
-                          child: Text(command),
+                          child: Text(command.name),
                         );
                       }).toList(),
                 ),
