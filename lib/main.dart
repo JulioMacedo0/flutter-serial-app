@@ -1,3 +1,5 @@
+// ignore_for_file: constant_identifier_names
+
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -80,7 +82,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
   // Command constants
   static const int START_BYTE = 0x02;
   static const int END_BYTE = 0x03;
-  static const int LOG_START_BYTE = 0x04;
+  //static const int LOG_START_BYTE = 0x04;
 
   StreamSubscription<Uint8List>? _subscription;
   StreamSubscription<UsbEvent>? _usbEventSubscription;
@@ -109,20 +111,20 @@ class _SerialControlPageState extends State<SerialControlPage> {
     _usbEventSubscription = UsbSerial.usbEventStream?.listen((UsbEvent event) {
       _addToSerialOutput("USB Event: ${event.event}");
 
-      // Update device list and check for ESP32 on any USB event
       _refreshDeviceList().then((_) {
-        // If device was added or we're starting up, try to connect to ESP32
         if (event.event == UsbEvent.ACTION_USB_ATTACHED) {
-          _connectToESP32();
-        }
-        // If device was removed and we were connected, handle disconnection
-        else if (event.event == UsbEvent.ACTION_USB_DETACHED && _isConnected) {
-          //  _handleDeviceDisconnection();
+          if (!_isConnected) {
+            _connectToESP32();
+          }
+        } else if (event.event == UsbEvent.ACTION_USB_DETACHED) {
+          final esp32 = _findESP32Device();
+          if (esp32 == null && _isConnected) {
+            _handleDeviceDisconnection();
+          }
         }
       });
     });
 
-    // Initial device discovery and connection attempt
     await _refreshDeviceList();
     _connectToESP32();
   }
@@ -134,7 +136,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
         _devices = devices;
       });
 
-      // Log found devices for debugging
       if (devices.isNotEmpty) {
         _addToSerialOutput("Found ${devices.length} USB devices:");
         for (var device in devices) {
@@ -163,7 +164,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
   }
 
   void _connectToESP32() async {
-    // Don't try to connect if already connected or in process of connecting
     if (_isConnected || _isConnecting) {
       return;
     }
@@ -173,7 +173,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
     });
 
     try {
-      // Find ESP32 device
       UsbDevice? esp32 = _findESP32Device();
 
       if (esp32 != null) {
@@ -194,7 +193,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
   }
 
   Future<void> _connectToDevice(UsbDevice device) async {
-    // Close any existing connections first
     if (_port != null) {
       await _disconnectFromDevice(notify: false);
     }
@@ -219,18 +217,16 @@ class _SerialControlPageState extends State<SerialControlPage> {
         return;
       }
 
-      // Configure port
       await _port!.setDTR(true);
       await _port!.setRTS(true);
 
       await _port!.setPortParameters(
-        115200, // Baud rate
+        115200,
         UsbPort.DATABITS_8,
         UsbPort.STOPBITS_1,
         UsbPort.PARITY_NONE,
       );
 
-      // Set up data listener
       _subscription = _port!.inputStream!.listen(
         (Uint8List data) {
           _processIncomingData(data);
@@ -245,7 +241,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
         },
       );
 
-      // Update connection state
       setState(() {
         _isConnected = true;
         _isConnecting = false;
@@ -256,7 +251,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
         'Connected to ${device.productName} (VID: ${device.vid}, PID: ${device.pid})',
       );
 
-      // Start sending ping every second
       _startPingTimer();
     } catch (e) {
       _addToSerialOutput('Connection error: $e');
@@ -290,10 +284,8 @@ class _SerialControlPageState extends State<SerialControlPage> {
   }
 
   void _handleDeviceDisconnection() async {
-    if (!_isConnected) return;
-
     await _disconnectFromDevice();
-    _addToSerialOutput('Device disconnected');
+    _addToSerialOutput('ESP32 disconnected');
   }
 
   void _startPingTimer() {
@@ -318,7 +310,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
 
       _port!.write(frame);
       _addToSerialOutput(
-        'Sent: $command (0x${cmdByte.toRadixString(16).padLeft(2, '0')})',
+        '[SENDER]: ${command.name} (0x${cmdByte.toRadixString(16).padLeft(2, '0')})',
       );
     } catch (e) {
       _addToSerialOutput('Error sending command $command: $e');
@@ -328,21 +320,16 @@ class _SerialControlPageState extends State<SerialControlPage> {
   void _processIncomingData(Uint8List data) {
     if (data.isEmpty) return;
 
-    String hexData = data
-        .map((byte) => '0x${byte.toRadixString(16).padLeft(2, '0')}')
-        .join(' ');
-    String string = new String.fromCharCodes(data);
+    String string = String.fromCharCodes(data);
+    _addToSerialOutput('[RECIVER]: $string');
 
-    _addToSerialOutput('Received: ${string}');
-
-    // Process specific responses
     if (data.length >= 3 &&
         data[0] == START_BYTE &&
         data[data.length - 1] == END_BYTE) {
       int cmdByte = data[1];
       handleCommand(cmdByte);
       String response =
-          RESPONSES.fromValue(cmdByte)?.value.toString() ??
+          RESPONSES.fromValue(cmdByte)?.name ??
           'Unknown (0x${cmdByte.toRadixString(16).padLeft(2, '0')})';
       _addToSerialOutput('Received command: $response');
     }
@@ -353,7 +340,6 @@ class _SerialControlPageState extends State<SerialControlPage> {
       _serialData.add(
         '${DateTime.now().toString().split('.').first}: $message',
       );
-      // Keep only the last 200 messages
       if (_serialData.length > 200) {
         _serialData.removeAt(0);
       }
@@ -390,24 +376,23 @@ class _SerialControlPageState extends State<SerialControlPage> {
     final value = RESPONSES.fromValue(command);
 
     if (value == null) {
-      _addToSerialOutput('Uknow command: ${command}');
+      _addToSerialOutput('Unknown command: $command');
       return;
     }
 
     switch (value) {
       case RESPONSES.pong:
-        _addToSerialOutput('command recived: ${RESPONSES.pong.name}');
+        _addToSerialOutput('Command received: ${RESPONSES.pong.name}');
         break;
       case RESPONSES.cmdDetectionOn:
-        _addToSerialOutput('command recived: ${RESPONSES.cmdDetectionOn.name}');
+        _addToSerialOutput(
+          'Command received: ${RESPONSES.cmdDetectionOn.name}',
+        );
         break;
       case RESPONSES.cmdDetectionOff:
         _addToSerialOutput(
-          'command recived: ${RESPONSES.cmdDetectionOff.name}',
+          'Command received: ${RESPONSES.cmdDetectionOff.name}',
         );
-        break;
-      default:
-        _addToSerialOutput('Uknow command: ${value.value}');
         break;
     }
   }
