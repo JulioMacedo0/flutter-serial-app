@@ -89,6 +89,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
   Timer? _pingTimer;
   bool _isConnected = false;
   bool _isConnecting = false;
+  bool _presence = false;
   DateTime? _lastSuccessfulConnection;
 
   @override
@@ -321,17 +322,13 @@ class _SerialControlPageState extends State<SerialControlPage> {
     if (data.isEmpty) return;
 
     String string = String.fromCharCodes(data);
-    _addToSerialOutput('[RECIVER]: $string');
+    // _addToSerialOutput('[RECIVER]: $string');
 
     if (data.length >= 3 &&
         data[0] == START_BYTE &&
         data[data.length - 1] == END_BYTE) {
       int cmdByte = data[1];
       handleCommand(cmdByte);
-      String response =
-          RESPONSES.fromValue(cmdByte)?.name ??
-          'Unknown (0x${cmdByte.toRadixString(16).padLeft(2, '0')})';
-      _addToSerialOutput('Received command: $response');
     }
   }
 
@@ -374,7 +371,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
 
   void handleCommand(int command) {
     final value = RESPONSES.fromValue(command);
-
+    const initMsg = "[COMMAND_RECIVER]";
     if (value == null) {
       _addToSerialOutput('Unknown command: $command');
       return;
@@ -382,17 +379,19 @@ class _SerialControlPageState extends State<SerialControlPage> {
 
     switch (value) {
       case RESPONSES.pong:
-        _addToSerialOutput('Command received: ${RESPONSES.pong.name}');
+        _addToSerialOutput('$initMsg: ${RESPONSES.pong.name}');
         break;
       case RESPONSES.cmdDetectionOn:
-        _addToSerialOutput(
-          'Command received: ${RESPONSES.cmdDetectionOn.name}',
-        );
+        _addToSerialOutput('$initMsg: ${RESPONSES.cmdDetectionOn.name}');
+        setState(() {
+          _presence = true;
+        });
         break;
       case RESPONSES.cmdDetectionOff:
-        _addToSerialOutput(
-          'Command received: ${RESPONSES.cmdDetectionOff.name}',
-        );
+        _addToSerialOutput('$initMsg: ${RESPONSES.cmdDetectionOff.name}');
+        setState(() {
+          _presence = false;
+        });
         break;
     }
   }
@@ -430,6 +429,16 @@ class _SerialControlPageState extends State<SerialControlPage> {
                     Expanded(
                       child: Text(
                         'Status: ${_getConnectionStatusText()}',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: _getConnectionStatusColor(),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        'presence: $_presence',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
