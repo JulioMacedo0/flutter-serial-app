@@ -5,6 +5,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.Bundle
+import android.view.WindowManager
 import io.flutter.embedding.engine.FlutterEngine
 
 
@@ -19,6 +20,7 @@ class MainActivity: FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminComponent = ComponentName(this, AdminReceiver::class.java)
 
