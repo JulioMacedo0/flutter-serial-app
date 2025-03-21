@@ -3,6 +3,9 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:barcode_app/drawer_widget.dart';
+import 'package:barcode_app/invisible_text_field.dart';
+
 import 'package:flutter/material.dart';
 import 'package:usb_serial/usb_serial.dart';
 
@@ -104,6 +107,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
     _subscription?.cancel();
     _usbEventSubscription?.cancel();
     _disconnectFromDevice();
+
     super.dispose();
   }
 
@@ -399,22 +403,10 @@ class _SerialControlPageState extends State<SerialControlPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      endDrawer: CustomDrawer(),
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Text(widget.title),
-        actions: [
-          IconButton(
-            icon: Icon(_isConnected ? Icons.usb : Icons.usb_off),
-            onPressed: () async {
-              if (_isConnected) {
-                await _disconnectFromDevice();
-              } else {
-                await _refreshDeviceList();
-                _connectToESP32();
-              }
-            },
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -426,6 +418,7 @@ class _SerialControlPageState extends State<SerialControlPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
+                    InvisibleTextField(),
                     Expanded(
                       child: Text(
                         'Status: ${_getConnectionStatusText()}',
