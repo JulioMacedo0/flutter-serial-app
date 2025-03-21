@@ -42,6 +42,7 @@ class InvisibleTextFieldState extends State<InvisibleTextField> {
       width: 0,
       height: 0,
       child: TextField(
+        controller: _controller,
         onSubmitted: _onEnterPressed,
         focusNode: _focusNode,
         decoration: const InputDecoration(
@@ -51,9 +52,7 @@ class InvisibleTextFieldState extends State<InvisibleTextField> {
         ),
         style: const TextStyle(color: Colors.transparent),
         cursorColor: Colors.transparent,
-        onChanged: (value) {
-          print('Detected a new value: ${value}');
-        },
+        onChanged: (value) {},
         keyboardType: TextInputType.none,
         showCursor: false,
       ),
